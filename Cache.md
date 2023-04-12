@@ -21,3 +21,67 @@
 来请求已经失效的缓存行，来完成脏数据的写回。
 #### IBM z14
   `IBM z14`设计了一个`VIVT`的目录，
+
+##L1 Cache实验
+### Linux中的共享内存
+
+​	`Linux`系统在运行时会在多个进程之间交换数据，共享内存是通过`tmpfs`这个文件系统实现的，`tmpfs`文件系统的目录为`/dev/shm`，`/dev/shm`是驻留在内存中，因此读写的速度可以和内存一致，`/dev/shm`默认的大小为系统内存的一半，只用在使用`shm_open`时，`/dev/shm`才会真正地占用内存。
+
+```c
+int shm_open(const char* name, int oflag, mode_t mode);
+void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
+int munmap(void *addr, size_t length);
+int shm_unlink(const char *name);
+int ftruncate(int fd, off_t length);
+```
+
+* `shm_open` ，用于创建或者打开共享内存文件。和一般文件`open`的区别在于，`shm_open`操作的文件一定是位于`tmpfs`文件系统里面的。
+* `mmap`， 用于将文件映射到内存中。
+* `munmap`，用于取消一段内存映射。
+* `shm_unlink`, 用于删除`shm_open`创建的文件。
+* `ftruncate`，用于重置文件的大小。
+
+### 测试
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
+int main() {
+    int fd = shm_open("test-shm", O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    if (fd == -1) {
+        printf("Unable to open shm\n");
+        exit(1);
+    }
+    
+    size_t size = 8192;
+    ftruncate(fd, size);
+    int size_int = size / 4;
+    int *a = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int *b = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    printf("a=%lx\n", a);
+    printf("b=%lx\n", b);
+    for (int i=0; i<size_int; i++) {
+        a[i] = b[i] = 0;
+    }
+    clock_t t1 = clock();
+    for (int j=0; j<1024*1024;j++) for (int i=0; i<size_int; i++) a[i] = b[i];
+    clock_t t2 = clock();
+    for (int j=0; j<1024*1024;j++) for (int i=0; i<size_int; i++) a[i] = a[i];
+    clock_t t3 = clock();
+    printf("t2-t1 = %ld\n", t2-t1);
+    printf("t3-t2 = %ld\n", t3-t2);
+    shm_unlink("test-shm");
+    return 0;
+}
+```
+
+![](https://raw.githubusercontent.com/PorterLu/picgo/main/cache_alias_test.png)
+
+​	这里`a`和`b`存在`alias`, 在锐龙`5800h`，可以发现`alias`不会使得性能下降。
+
+[浅谈现代处理器实现超大L1 Cache的方式 – 属于CYY自己的世界 (cyyself.name)](https://blog.cyyself.name/why-the-big-l1-cache-is-so-hard/)
+
